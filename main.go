@@ -8,55 +8,55 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"syscall"
+	"time"
 )
 
-func uncacheFile(path string, err error) error {
-	if err != nil {
-		return err
-	}
-	// Read byte 67108864
-	f, err := os.Open(path)
-	if err != nil {
-		fmt.Println(err)
-	}
-	defer f.Close()
-	r := bufio.NewReader(f)
-	buf := make([]byte, 67108864)
+func uncacheFile(path string, fileCount int, buffer []byte, err error) error {
+	fileName := filepath.Base(path)
+	stats, _ := os.Stat(path)
+	st := stats.Sys().(*syscall.Stat_t)
+	fmt.Printf("%s | %v | %v |", fileName, fileCount, st.Blocks)
+
+	file, _ := os.Open(path)
+	reader := bufio.NewReader(file)
 	for {
-		n, err := io.ReadFull(r, buf[:cap(buf)])
-		buf = buf[:n]
+		_, err := reader.Read(buffer)
 		if err != nil {
+			stats, _ = os.Stat(path)
+			st = stats.Sys().(*syscall.Stat_t)
+			fmt.Printf("%v\n", st.Blocks)
 			if err == io.EOF {
-				fmt.Println(path, "| UNCACHED")
 				break
-			}
-			if err != io.ErrUnexpectedEOF {
-				fmt.Fprintln(os.Stderr, err)
-				break
+			} else {
+				fmt.Println(err)
+				return err
 			}
 		}
-		fmt.Println(path, "|", n)
-	}
-	if err != nil {
-		return err
 	}
 	return nil
 }
 
 func main() {
-	inputDir := "./tmp"
+	timestart := time.Now()
+	inputDir := os.Args[1]
+
+	buffer := make([]byte, 67108864)
+	fileCount := 0
 	err := filepath.WalkDir(inputDir,
 		func(path string, file fs.DirEntry, err error) error {
 			if err != nil {
 				return err
 			}
 			if !file.IsDir() {
-				uncacheFile(path, err)
+				fileCount++
+				uncacheFile(path, fileCount, buffer, err)
 			}
 			return nil
 		})
-	fmt.Println("== COMPLETED ==")
 	if err != nil {
 		log.Println(err)
 	}
+	elapsedtime := time.Since(timestart)
+	log.Println(elapsedtime)
 }
