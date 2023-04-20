@@ -8,55 +8,67 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 )
 
-func uncacheFile(path string, fileCount int, buffer []byte, err error) error {
-	fileName := filepath.Base(path)
-	stats, _ := os.Stat(path)
-	st := stats.Sys().(*syscall.Stat_t)
-	fmt.Printf("%s | %v | %v |", fileName, fileCount, st.Blocks)
+func main() {
+	wg := sync.WaitGroup{}
+	wc := make(chan struct{}, 100)
 
-	file, _ := os.Open(path)
-	reader := bufio.NewReader(file)
+	inputDir := os.Args[1]
+	count := 0
+
+	timestart := time.Now()
+	err := filepath.WalkDir(inputDir,
+		func(filePath string, file fs.DirEntry, err error) error {
+			if !file.IsDir() {
+				count++
+
+				wg.Add(1)
+				go func(count int) {
+					wc <- struct{}{}
+					uncacheFile(filePath, count)
+					<-wc
+					wg.Done()
+				}(count)
+			}
+			return nil
+		})
+	wg.Wait()
+	if err != nil {
+		log.Println(err)
+	}
+	log.Println(time.Since(timestart))
+}
+
+func uncacheFile(filePath string, count int) error {
+	fileName := filepath.Base(filePath)
+	stats, _ := os.Stat(filePath)
+	st := stats.Sys().(*syscall.Stat_t)
+	fmt.Printf("%s | %v | %v\n", fileName, count, st.Blocks)
+
+	//67108864
+	dataBuffer := make([]byte, 4096)
+
+	fileHandle, _ := os.Open(filePath)
+	fileReader := bufio.NewReader(fileHandle)
 	for {
-		_, err := reader.Read(buffer)
+		_, err := fileReader.Read(dataBuffer)
 		if err != nil {
-			stats, _ = os.Stat(path)
-			st = stats.Sys().(*syscall.Stat_t)
-			fmt.Printf("%v\n", st.Blocks)
+			// stats, _ = os.Stat(filePath)
+			// st = stats.Sys().(*syscall.Stat_t)
+			// fmt.Printf("%v\n", st.Blocks)
 			if err == io.EOF {
 				break
 			} else {
-				fmt.Println(err)
+				log.Println(err)
 				return err
 			}
 		}
 	}
+	fmt.Printf("\n")
+	fileHandle.Close()
 	return nil
-}
-
-func main() {
-	timestart := time.Now()
-	inputDir := os.Args[1]
-
-	buffer := make([]byte, 67108864)
-	fileCount := 0
-	err := filepath.WalkDir(inputDir,
-		func(path string, file fs.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			if !file.IsDir() {
-				fileCount++
-				uncacheFile(path, fileCount, buffer, err)
-			}
-			return nil
-		})
-	if err != nil {
-		log.Println(err)
-	}
-	elapsedtime := time.Since(timestart)
-	log.Println(elapsedtime)
 }
