@@ -13,37 +13,44 @@ import (
 )
 
 func main() {
-	wg := sync.WaitGroup{}
-	wc := make(chan struct{}, 100)
+	if os.Args != nil && len(os.Args) == 2 {
+		inputDir := os.Args[1]
 
-	inputDir := os.Args[1]
-	count := 0
+		if _, err := os.Stat(inputDir); os.IsNotExist(err) {
+			log.Println("Input directory does not exist")
+		} else {
+			wg := sync.WaitGroup{}
+			wc := make(chan struct{}, 100)
+			count := 0
 
-	timestart := time.Now()
-	err := filepath.WalkDir(inputDir,
-		func(filePath string, file fs.DirEntry, err error) error {
-			if !file.IsDir() {
-				count++
-				// fmt.Printf("%v ", count)
-				fmt.Printf(".")
+			timestart := time.Now()
+			err := filepath.WalkDir(inputDir,
+				func(filePath string, file fs.DirEntry, err error) error {
+					if !file.IsDir() {
+						count++
+						fmt.Printf(".")
 
-				wg.Add(1)
-				go func(count int) {
-					wc <- struct{}{}
-					uncacheFile(filePath, count)
-					<-wc
-					wg.Done()
-				}(count)
+						wg.Add(1)
+						go func(count int) {
+							wc <- struct{}{}
+							uncacheFile(filePath, count)
+							<-wc
+							wg.Done()
+						}(count)
+					}
+					return nil
+				})
+			wg.Wait()
+			if err != nil {
+				log.Println(err)
 			}
-			return nil
-		})
-	wg.Wait()
-	if err != nil {
-		log.Println(err)
+			fmt.Printf("\n\n")
+			log.Println("File Count ", count)
+			log.Println("Time taken ", time.Since(timestart))
+		}
+	} else {
+		log.Println("Please provide the input directory")
 	}
-	fmt.Printf("\n\n")
-	log.Println("File Count ", count)
-	log.Println("Time taken ", time.Since(timestart))
 }
 
 func uncacheFile(filePath string, count int) error {
