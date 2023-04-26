@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -25,6 +24,8 @@ func main() {
 		func(filePath string, file fs.DirEntry, err error) error {
 			if !file.IsDir() {
 				count++
+				// fmt.Printf("%v ", count)
+				fmt.Printf(".")
 
 				wg.Add(1)
 				go func(count int) {
@@ -40,16 +41,12 @@ func main() {
 	if err != nil {
 		log.Println(err)
 	}
-	log.Println(time.Since(timestart))
+	fmt.Printf("\n\n")
+	log.Println("File Count ", count)
+	log.Println("Time taken ", time.Since(timestart))
 }
 
 func uncacheFile(filePath string, count int) error {
-	fileName := filepath.Base(filePath)
-	stats, _ := os.Stat(filePath)
-	st := stats.Sys().(*syscall.Stat_t)
-	fmt.Printf("%s | %v | %v\n", fileName, count, st.Blocks)
-
-	//67108864
 	dataBuffer := make([]byte, 4096)
 
 	fileHandle, _ := os.Open(filePath)
@@ -57,9 +54,6 @@ func uncacheFile(filePath string, count int) error {
 	for {
 		_, err := fileReader.Read(dataBuffer)
 		if err != nil {
-			// stats, _ = os.Stat(filePath)
-			// st = stats.Sys().(*syscall.Stat_t)
-			// fmt.Printf("%v\n", st.Blocks)
 			if err == io.EOF {
 				break
 			} else {
@@ -68,7 +62,6 @@ func uncacheFile(filePath string, count int) error {
 			}
 		}
 	}
-	fmt.Printf("\n")
 	fileHandle.Close()
 	return nil
 }
