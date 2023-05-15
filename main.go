@@ -13,41 +13,49 @@ import (
 )
 
 func main() {
-	if os.Args != nil && len(os.Args) == 2 {
-		inputDir := os.Args[1]
+	if os.Args != nil && len(os.Args) > 1 {
+		timeStart := time.Now()
+		timePoint := timeStart
+		totalCount := 0
+		for _, inputDir := range os.Args[1:] {
+			log.Println("Recalling", inputDir)
 
-		if _, err := os.Stat(inputDir); os.IsNotExist(err) {
-			log.Println("Input directory does not exist")
-		} else {
-			wg := sync.WaitGroup{}
-			wc := make(chan struct{}, 100)
-			count := 0
+			if _, err := os.Stat(inputDir); os.IsNotExist(err) {
+				log.Println("Input directory does not exist")
+			} else {
+				wg := sync.WaitGroup{}
+				wc := make(chan struct{}, 100)
+				count := 0
 
-			timestart := time.Now()
-			err := filepath.WalkDir(inputDir,
-				func(filePath string, file fs.DirEntry, err error) error {
-					if !file.IsDir() {
-						count++
-						fmt.Printf(".")
+				err := filepath.WalkDir(inputDir,
+					func(filePath string, file fs.DirEntry, err error) error {
+						if !file.IsDir() {
+							count++
+							fmt.Printf(".")
 
-						wg.Add(1)
-						go func(count int) {
-							wc <- struct{}{}
-							uncacheFile(filePath, count)
-							<-wc
-							wg.Done()
-						}(count)
-					}
-					return nil
-				})
-			wg.Wait()
-			if err != nil {
-				log.Println(err)
+							wg.Add(1)
+							go func(count int) {
+								wc <- struct{}{}
+								uncacheFile(filePath, count)
+								<-wc
+								wg.Done()
+							}(count)
+						}
+						return nil
+					})
+				wg.Wait()
+				if err != nil {
+					log.Println(err)
+				}
+				fmt.Printf("")
+				log.Println("Recalled", count, "files in", time.Since(timePoint))
+				timePoint = time.Now()
+				totalCount += count
 			}
-			fmt.Printf("\n\n")
-			log.Println("File Count ", count)
-			log.Println("Time taken ", time.Since(timestart))
+			fmt.Println()
 		}
+		fmt.Println("===================")
+		log.Println("Recalled", totalCount, "files in", time.Since(timeStart))
 	} else {
 		log.Println("Please provide the input directory")
 	}
@@ -64,7 +72,8 @@ func uncacheFile(filePath string, count int) error {
 			if err == io.EOF {
 				break
 			} else {
-				log.Println(err)
+				fmt.Println()
+				fmt.Println(filePath, ": ", err)
 				return err
 			}
 		}
