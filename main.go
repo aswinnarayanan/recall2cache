@@ -17,7 +17,7 @@ func main() {
 		timePoint := timeStart
 		totalCount := 0
 		for _, inputDir := range os.Args[1:] {
-			fmt.Println("Recalling", inputDir)
+			fmt.Println("\n> Recalling from", inputDir)
 
 			if _, err := os.Stat(inputDir); os.IsNotExist(err) {
 				fmt.Println("Input directory does not exist")
@@ -45,12 +45,14 @@ func main() {
 				if err != nil {
 					fmt.Println(err)
 				}
-				fmt.Printf("\nRecalled %d files in %s\n\n", count, time.Since(timePoint))
+				fmt.Println("<", count, "files in", time.Since(timePoint))
 				timePoint = time.Now()
 				totalCount += count
 			}
 		}
-		fmt.Printf("===================\nRecalled %d files in %s\n", totalCount, time.Since(timeStart))
+		fmt.Println("\n===================")
+		fmt.Println("Recalled", totalCount, "files in", time.Since(timeStart))
+		fmt.Println("===================")
 	} else {
 		fmt.Println("Please provide the input directory")
 	}
@@ -61,14 +63,14 @@ func uncacheFile(filePath string) error {
 
 	fileHandle, _ := os.Open(filePath)
 	fileReader := bufio.NewReader(fileHandle)
-	fmt.Printf(".")
+	// fmt.Printf(".")
 	for {
 		_, err := fileReader.Read(dataBuffer)
 		if err != nil {
 			if err == io.EOF {
 				break
 			} else {
-				fmt.Printf("\n%s:%s\n", filePath, err)
+				fmt.Println(filePath, ":", err)
 				return err
 			}
 		}
