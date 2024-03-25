@@ -30,12 +30,11 @@ func main() {
 					func(filePath string, file fs.DirEntry, err error) error {
 						if !file.IsDir() {
 							count++
-							// fmt.Printf(".")
 
 							wg.Add(1)
 							go func(count int) {
 								wc <- struct{}{}
-								uncacheFile(filePath, count)
+								uncacheFile(filePath)
 								<-wc
 								wg.Done()
 							}(count)
@@ -46,34 +45,30 @@ func main() {
 				if err != nil {
 					fmt.Println(err)
 				}
-				fmt.Printf("")
-				fmt.Println("Recalled", count, "files in", time.Since(timePoint))
+				fmt.Printf("\nRecalled %d files in %s\n\n", count, time.Since(timePoint))
 				timePoint = time.Now()
 				totalCount += count
 			}
-			fmt.Println()
 		}
-		fmt.Println("===================")
-		fmt.Println("Recalled", totalCount, "files in", time.Since(timeStart))
+		fmt.Printf("===================\nRecalled %d files in %s\n", totalCount, time.Since(timeStart))
 	} else {
 		fmt.Println("Please provide the input directory")
 	}
 }
 
-func uncacheFile(filePath string, count int) error {
+func uncacheFile(filePath string) error {
 	dataBuffer := make([]byte, 4096)
 
 	fileHandle, _ := os.Open(filePath)
 	fileReader := bufio.NewReader(fileHandle)
-	fmt.Println(filePath)
+	fmt.Printf(".")
 	for {
 		_, err := fileReader.Read(dataBuffer)
 		if err != nil {
 			if err == io.EOF {
 				break
 			} else {
-				fmt.Println()
-				fmt.Println(filePath, ": ", err)
+				fmt.Printf("\n%s:%s\n", filePath, err)
 				return err
 			}
 		}
