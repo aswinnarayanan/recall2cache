@@ -53,6 +53,7 @@ func recallFiles(inputDir string) (int, error) {
 	wc := make(chan struct{}, 100)
 	count := 0
 
+	startTime := time.Now()
 	err := filepath.WalkDir(inputDir, func(filePath string, file fs.DirEntry, err error) error {
 		if err != nil {
 			return fmt.Errorf("error accessing file %s: %w", filePath, err)
@@ -76,7 +77,7 @@ func recallFiles(inputDir string) (int, error) {
 		return 0, fmt.Errorf("error walking directory %s: %w", inputDir, err)
 	}
 
-	log.Println("<", count, "files in", time.Since(time.Now()))
+	log.Println("<", count, "files in", time.Since(startTime))
 	return count, nil
 }
 
