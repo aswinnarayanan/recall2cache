@@ -16,24 +16,15 @@ jobs:
         with:
           go-version: '1.24'
 
+      - name: Install GoReleaser
+        run: |
+          curl -sL https://git.io/goreleaser | bash
+
       - name: Set version
         id: version
         run: echo "name=$(date +'%Y.%m.%d')" >> $GITHUB_OUTPUT
 
-      - name: Build and archive binary
-        run: |
-          go build -o recall2cache
-          tar -czvf recall2cache.tar.gz recall2cache
-
-      - name: Create GitHub Release
-        run: |
-          gh release create ${{ steps.version.outputs.name }} \
-            --title "${{ steps.version.outputs.name }}"
-        env:
-          GITHUB_TOKEN: ${{ secrets.PAT_RECALL2CACHE }}
-
-      - name: Upload Release Asset
-        run: |
-          gh release upload ${{ steps.version.outputs.name }} recall2cache.tar.gz
+      - name: Build and release
+        run: goreleaser release --rm-dist --snapshot
         env:
           GITHUB_TOKEN: ${{ secrets.PAT_RECALL2CACHE }}
