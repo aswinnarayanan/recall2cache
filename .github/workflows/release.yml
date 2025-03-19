@@ -29,17 +29,12 @@ jobs:
         run: echo "name=$(date +'%Y.%m.%d')" >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release
-        id: create_release
-        uses: actions/create-release@v1
+        run: |
+          gh release create ${{ steps.date.outputs.date }} recall2cache.tar.gz \
+            --title "Release ${{ steps.date.outputs.date }}" \
+            --notes "Automated release for version ${{ steps.date.outputs.date }}"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ steps.date.outputs.date }}
-          release_name: Release ${{ steps.date.outputs.date }}
-          body: |
-            Automated release for version ${{ steps.date.outputs.date }}.
-          draft: false
-          prerelease: false
 
       - name: Upload Release Asset
         uses: actions/upload-release-asset@v1
