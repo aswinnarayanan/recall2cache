@@ -1,0 +1,26 @@
+project_name: recall2cache
+
+builds:
+  - id: recall2cache
+    main: ./main.go
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+
+archives:
+  - format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - recall2cache
+
+release:
+  github:
+    owner: aswinnarayanan
+    name: recall2cache
+    token: "{{ .Env.GITHUB_TOKEN }}"
