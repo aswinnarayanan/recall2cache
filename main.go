@@ -13,6 +13,7 @@ import (
 	"time"
 )
 
+// Main entrypoint
 func main() {
 	if len(os.Args) <= 1 {
 		log.Println("Please provide the input directory")
@@ -22,14 +23,17 @@ func main() {
 	timeStart := time.Now()
 	totalCount := 0
 
+	// Process each input directory provided
 	for _, inputDir := range os.Args[1:] {
 		log.Println("> Recalling from", inputDir)
 
+		// Check if the input directory exists
 		if _, err := os.Stat(inputDir); os.IsNotExist(err) {
 			log.Println("Input directory does not exist:", inputDir)
 			continue
 		}
 
+		// Recall files from the input directory
 		count, err := recallFiles(inputDir)
 		if err != nil {
 			log.Println("Error recalling files:", err)
@@ -39,6 +43,7 @@ func main() {
 		totalCount += count
 	}
 
+	// Print results
 	resultText := fmt.Sprintf("Recalled %d files in %s", totalCount, time.Since(timeStart))
 	separator := strings.Repeat("=", len(resultText))
 
@@ -47,9 +52,10 @@ func main() {
 	log.Println(separator)
 }
 
-// recallFiles processes all files in the given directory
+// recallFiles processes all files in the given directory and returns the count of processed files.
 func recallFiles(inputDir string) (int, error) {
 	wg := sync.WaitGroup{}
+	// Set number of files that can be processed concurrently [100]
 	wc := make(chan struct{}, 100)
 	count := 0
 
