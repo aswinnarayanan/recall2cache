@@ -34,7 +34,7 @@ jobs:
             --title "Release ${{ steps.date.outputs.date }}" \
             --notes "Automated release for version ${{ steps.date.outputs.date }}"
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.PAT_RECALL2CACHE }}
 
       - name: Upload Release Asset
         uses: actions/upload-release-asset@v1
