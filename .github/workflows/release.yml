@@ -31,7 +31,7 @@ jobs:
       - name: Create GitHub Release
         run: |
           gh release create ${{ steps.date.outputs.name }} \
-            --title "Release ${{ steps.date.outputs.name }}" \
+            --title "${{ steps.date.outputs.name }}" \
             --notes "Automated release for version ${{ steps.date.outputs.name }}"
         env:
           GITHUB_TOKEN: ${{ secrets.PAT_RECALL2CACHE }}
