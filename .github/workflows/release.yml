@@ -37,11 +37,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.PAT_RECALL2CACHE }}
 
       - name: Upload Release Asset
-        uses: actions/upload-release-asset@v1
+        run: |
+          gh release upload ${{ steps.create_release.outputs.release_url }} recall2cache.tar.gz
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: recall2cache.tar.gz
-          asset_name: recall2cache.tar.gz
-          asset_content_type: application/gzip
+          GITHUB_TOKEN: ${{ secrets.PAT_RECALL2CACHE }}
+          
