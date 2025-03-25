@@ -1,30 +1,82 @@
 name: Build and Release
 
 on:
-  workflow_dispatch:
   push:
     tags:
       - "*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Custom release version (defaults to yyyy.mm.dd)'
+        required: false
 
 permissions:
   contents: write
 
 jobs:
-  goreleaser:
+  build-and-release:
+    strategy:
+      matrix:
+        os: [linux, darwin, windows]
+        arch: [amd64]
+        include:
+          - os: linux
+            filename: recall2cache
+            extension: ""
+          - os: darwin
+            filename: recall2cache-darwin
+            extension: ""
+          - os: windows
+            filename: recall2cache.exe
+            extension: ".exe"
+
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v5
-      - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v6
         with:
-          distribution: goreleaser
-          version: '~> v2'
-          args: release --clean
+          go-version: '1.24'
+
+      - name: Set version
+        id: version
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            echo "name=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "name=$(date +'%Y.%m.%d')" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          go build -o ${{ matrix.filename }} 
+
+      - name: Create archive
+        run: |
+          tar -czvf ${{ matrix.filename }}.tar.gz ${{ matrix.filename }}${{ matrix.extension }}
+
+      - name: Create GitHub Release
+        if: matrix.os == 'linux'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create ${{ steps.version.outputs.name }} \
+            --title "${{ steps.version.outputs.name }}"
+
+      - name: Upload Release Assets
+        if: matrix.os == 'linux'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload ${{ steps.version.outputs.name }} \
+            ${{ matrix.filename }}.tar.gz \
+            ${{ matrix.filename }}-darwin.tar.gz \
+            ${{ matrix.filename }}.exe.tar.gz
