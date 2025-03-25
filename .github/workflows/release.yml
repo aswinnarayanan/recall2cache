@@ -51,7 +51,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.filename }}-artifact
-          path: ${{ matrix.filename }}${{ matrix.archive_ext }}
+          path: ${{ matrix.filename }}-${{ matrix.goos }}-${{ matrix.goarch }}-${{ matrix.archive_ext }}
 
   release:
     needs: build
