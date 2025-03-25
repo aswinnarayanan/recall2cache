@@ -7,28 +7,35 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Custom release version (defaults to yyyy.mm.dd)'
+        description: 'Custom release version (optional)'
         required: false
 
 permissions:
   contents: write
 
 jobs:
-  build-and-release:
+  build:
     strategy:
       matrix:
-        os: [linux, darwin, windows]
-        arch: [amd64]
         include:
           - os: linux
+            goos: linux
+            goarch: amd64
             filename: recall2cache
-            extension: ""
+            archive_cmd: tar -czvf
+            archive_ext: .tar.gz
           - os: darwin
+            goos: darwin
+            goarch: amd64
             filename: recall2cache-darwin
-            extension: ""
+            archive_cmd: tar -czvf
+            archive_ext: .tar.gz
           - os: windows
+            goos: windows
+            goarch: amd64
             filename: recall2cache.exe
-            extension: ".exe"
+            archive_cmd: zip -r
+            archive_ext: .zip
 
     runs-on: ubuntu-latest
 
@@ -43,40 +50,41 @@ jobs:
         with:
           go-version: '1.24'
 
-      - name: Set version
-        id: version
-        run: |
-          if [ -n "${{ github.event.inputs.version }}" ]; then
-            echo "name=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
-          else
-            echo "name=$(date +'%Y.%m.%d')" >> $GITHUB_OUTPUT
-          fi
-
       - name: Build binary
         env:
-          GOOS: ${{ matrix.os }}
-          GOARCH: ${{ matrix.arch }}
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
         run: |
-          go build -o ${{ matrix.filename }} 
+          go build -o ${{ matrix.filename }}
 
       - name: Create archive
         run: |
-          tar -czvf ${{ matrix.filename }}.tar.gz ${{ matrix.filename }}${{ matrix.extension }}
+          ${{ matrix.archive_cmd }} ${{ matrix.filename }}${{ matrix.archive_ext }} ${{ matrix.filename }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.filename }}-artifact
+          path: ${{ matrix.filename }}${{ matrix.archive_ext }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: '*-artifact'
+
+      - name: List artifacts
+        run: ls -R artifacts
 
       - name: Create GitHub Release
-        if: matrix.os == 'linux'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create ${{ steps.version.outputs.name }} \
-            --title "${{ steps.version.outputs.name }}"
-
-      - name: Upload Release Assets
-        if: matrix.os == 'linux'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release upload ${{ steps.version.outputs.name }} \
-            ${{ matrix.filename }}.tar.gz \
-            ${{ matrix.filename }}-darwin.tar.gz \
-            ${{ matrix.filename }}.exe.tar.gz
+          VERSION=$(date +'%Y.%m.%d')
+          gh release create $VERSION \
+            --title "$VERSION" \
+            artifacts/*.{tar.gz,zip}
