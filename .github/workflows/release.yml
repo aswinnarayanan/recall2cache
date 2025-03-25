@@ -18,25 +18,11 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: linux
-            goos: linux
+          - goos: linux
             goarch: amd64
             filename: recall2cache
             archive_cmd: tar -czvf
             archive_ext: .tar.gz
-          - os: darwin
-            goos: darwin
-            goarch: amd64
-            filename: recall2cache-darwin
-            archive_cmd: tar -czvf
-            archive_ext: .tar.gz
-          - os: windows
-            goos: windows
-            goarch: amd64
-            filename: recall2cache.exe
-            archive_cmd: zip -r
-            archive_ext: .zip
-
     runs-on: ubuntu-latest
 
     steps:
@@ -59,7 +45,7 @@ jobs:
 
       - name: Create archive
         run: |
-          ${{ matrix.archive_cmd }} ${{ matrix.filename }}${{ matrix.archive_ext }} ${{ matrix.filename }}
+          ${{ matrix.archive_cmd }} ${{ matrix.filename }}-${{ matrix.goos }}-${{ matrix.goarch }}-${{ matrix.archive_ext }} ${{ matrix.filename }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -77,8 +63,17 @@ jobs:
           path: artifacts
           pattern: '*-artifact'
 
-      - name: List artifacts
-        run: ls -R artifacts
+      - name: Debug artifact download
+        run: |
+          echo "Listing contents of artifacts directory:"
+          ls -la artifacts
+          echo "Listing all files recursively:"
+          find artifacts -type f
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+          cp artifacts/*/* release/
 
       - name: Create GitHub Release
         env:
@@ -87,4 +82,4 @@ jobs:
           VERSION=$(date +'%Y.%m.%d')
           gh release create $VERSION \
             --title "$VERSION" \
-            artifacts/*.{tar.gz,zip}
+            release/*
