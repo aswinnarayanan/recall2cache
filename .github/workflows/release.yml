@@ -18,6 +18,10 @@ on:
         description: 'Manual release notes (optional). If blank, will be auto-generated.'
         required: false
 
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 permissions:
   contents: write
 
