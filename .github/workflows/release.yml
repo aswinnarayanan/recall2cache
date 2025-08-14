@@ -6,9 +6,14 @@ on:
       - "v*.*.*"
   workflow_dispatch:
     inputs:
-      version:
-        description: 'Release version (e.g., v0.1.0)'
+      version_increment:
+        description: 'Which part of the version to increment'
         required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
       notes:
         description: 'Manual release notes (optional). If blank, will be auto-generated.'
         required: false
@@ -83,34 +88,54 @@ jobs:
           mkdir -p release
           cp artifacts/*/* release/
 
+      - name: Determine Version
+        id: version
+        run: |
+          VERSION_PAYLOAD=""
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            git fetch --tags
+            LATEST_TAG=$(git tag -l --sort=-v:refname "v*.*.*" | head -n 1)
+            if [ -z "$LATEST_TAG" ]; then
+              NEW_VERSION="v0.1.0"
+            else
+              VERSION_STRING=${LATEST_TAG#v}
+              MAJOR=$(echo $VERSION_STRING | cut -d. -f1)
+              MINOR=$(echo $VERSION_STRING | cut -d. -f2)
+              PATCH=$(echo $VERSION_STRING | cut -d. -f3)
+              case "${{ inputs.version_increment }}" in
+                major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+                minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+                patch) PATCH=$((PATCH + 1)) ;;
+              esac
+              NEW_VERSION="v$MAJOR.$MINOR.$PATCH"
+            fi
+            VERSION_PAYLOAD=$NEW_VERSION
+          else
+            VERSION_PAYLOAD="${{ github.ref_name }}"
+          fi
+          echo "version_number=$VERSION_PAYLOAD" >> "$GITHUB_OUTPUT"
+
       - name: Create and push tag for workflow_dispatch
-        if: github.event_name == 'workflow_dispatch' && inputs.version
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag ${{ inputs.version }}
-          git push origin ${{ inputs.version }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          git tag ${{ steps.version.outputs.version_number }}
+          git push origin ${{ steps.version.outputs.version_number }}
 
       - name: Create GitHub Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION="${{ inputs.version }}"
-          else
-            VERSION="${{ github.ref_name }}"
-          fi
-
           NOTES_ARG=""
           if [ -n "${{ inputs.notes }}" ]; then
             NOTES_ARG="--notes"
           else
             NOTES_ARG="--generate-notes"
           fi
-
-          gh release create "$VERSION" \
-            --title "Release $VERSION" \
+          gh release create "${{ steps.version.outputs.version_number }}" \
+            --title "Release ${{ steps.version.outputs.version_number }}" \
             $NOTES_ARG "${{ inputs.notes }}" \
             release/*
