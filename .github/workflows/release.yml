@@ -128,14 +128,15 @@ jobs:
       - name: Create GitHub Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NOTES_INPUT: ${{ inputs.notes }}
         run: |
-          NOTES_ARG=""
-          if [ -n "${{ inputs.notes }}" ]; then
-            NOTES_ARG="--notes"
+          NOTES_ARGS=()
+          if [ -n "$NOTES_INPUT" ]; then
+            NOTES_ARGS+=(--notes "$NOTES_INPUT")
           else
-            NOTES_ARG="--generate-notes"
+            NOTES_ARGS+=(--generate-notes)
           fi
           gh release create "${{ steps.version.outputs.version_number }}" \
             --title "Release ${{ steps.version.outputs.version_number }}" \
-            $NOTES_ARG "${{ inputs.notes }}" \
+            "${NOTES_ARGS[@]}" \
             release/*
