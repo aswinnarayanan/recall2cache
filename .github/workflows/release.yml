@@ -137,6 +137,6 @@ jobs:
             NOTES_ARGS+=(--generate-notes)
           fi
           gh release create "${{ steps.version.outputs.version_number }}" \
-            --title "Release ${{ steps.version.outputs.version_number }}" \
+            --title "${{ steps.version.outputs.version_number }}" \
             "${NOTES_ARGS[@]}" \
             release/*
