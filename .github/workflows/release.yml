@@ -3,11 +3,14 @@ name: Build and Release
 on:
   push:
     tags:
-      - "*"
+      - "v*.*.*"
   workflow_dispatch:
     inputs:
       version:
-        description: 'Custom release version (optional)'
+        description: 'Release version (e.g., v0.1.0)'
+        required: true
+      notes:
+        description: 'Manual release notes (optional). If blank, will be auto-generated.'
         required: false
 
 permissions:
@@ -94,12 +97,20 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.version }}" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             VERSION="${{ inputs.version }}"
           else
             VERSION="${{ github.ref_name }}"
           fi
+
+          NOTES_ARG=""
+          if [ -n "${{ inputs.notes }}" ]; then
+            NOTES_ARG="--notes"
+          else
+            NOTES_ARG="--generate-notes"
+          fi
+
           gh release create "$VERSION" \
             --title "Release $VERSION" \
-            --notes "See the assets for this release below" \
+            $NOTES_ARG "${{ inputs.notes }}" \
             release/*
