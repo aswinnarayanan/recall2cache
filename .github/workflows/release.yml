@@ -86,7 +86,7 @@ jobs:
       - name: Prepare release assets
         run: |
           mkdir -p release
-          cp artifacts/*/* release/
+          cp artifacts/* release/
 
       - name: Determine Version
         id: version
