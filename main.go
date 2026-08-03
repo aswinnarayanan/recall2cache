@@ -39,20 +39,20 @@ func main() {
 	for _, inputDir := range flag.Args() {
 		log.Println("> Recalling from", inputDir)
 
-		// Check if the input directory exists
-		if _, err := os.Stat(inputDir); os.IsNotExist(err) {
-			log.Println("Input directory does not exist:", inputDir)
+		// Check if the input directory is accessible
+		if _, err := os.Stat(inputDir); err != nil {
+			log.Println("Cannot access input directory:", inputDir, err)
 			continue
 		}
 
-		// Recall files from the input directory
+		// Recall files from the input directory. Files recalled before an error are
+		// still counted, so the total does not under-report.
 		count, err := recallFiles(inputDir)
+		totalCount += count
 		if err != nil {
 			log.Println("Error recalling files:", err)
 			continue
 		}
-
-		totalCount += count
 	}
 
 	// Print results
@@ -70,32 +70,55 @@ func recallFiles(inputDir string) (int, error) {
 	// Set number of files that can be processed concurrently [100]
 	wc := make(chan struct{}, 100)
 	count := 0
+	skipped := 0
+	walkErrors := 0
 
 	startTime := time.Now()
+	// The counters below are only touched from this callback, which WalkDir runs on a
+	// single goroutine, so they need no synchronisation.
 	err := filepath.WalkDir(inputDir, func(filePath string, file fs.DirEntry, err error) error {
 		if err != nil {
-			return fmt.Errorf("error accessing file %s: %w", filePath, err)
+			// Keep walking. One unreadable file or directory must not abandon the
+			// rest of the tree.
+			log.Println("Error accessing", filePath+":", err)
+			walkErrors++
+			return nil
 		}
-		if !file.IsDir() {
-			count++
-			wg.Add(1)
-			go func(filePath string) {
-				defer wg.Done()
-				wc <- struct{}{}
-				if err := uncacheFile(filePath); err != nil {
-					log.Println("Error uncaching file:", err)
-				}
-				<-wc
-			}(filePath)
+		if file.IsDir() {
+			return nil
 		}
+		// Only regular files. Opening a FIFO with no writer blocks forever and would
+		// hold a concurrency slot permanently, and symlinks would be followed back out
+		// of the input tree.
+		if !file.Type().IsRegular() {
+			skipped++
+			return nil
+		}
+		count++
+		wg.Add(1)
+		go func(filePath string) {
+			defer wg.Done()
+			wc <- struct{}{}
+			if err := uncacheFile(filePath); err != nil {
+				log.Println("Error uncaching file:", err)
+			}
+			<-wc
+		}(filePath)
 		return nil
 	})
 	wg.Wait()
-	if err != nil {
-		return 0, fmt.Errorf("error walking directory %s: %w", inputDir, err)
-	}
 
+	if skipped > 0 {
+		log.Println("Skipped", skipped, "non-regular files in", inputDir)
+	}
+	if walkErrors > 0 {
+		log.Println("Encountered", walkErrors, "errors walking", inputDir)
+	}
 	log.Println("<", count, "files in", time.Since(startTime))
+
+	if err != nil {
+		return count, fmt.Errorf("error walking directory %s: %w", inputDir, err)
+	}
 	return count, nil
 }
 
