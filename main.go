@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -27,6 +28,8 @@ const (
 	defaultBufferMiB = 4
 	// How often progress is reported, unless overridden with -progress.
 	defaultProgress = time.Minute
+	// Any under-allocation counts as migrated, unless overridden with -stub-ratio.
+	defaultStubRatio = 1.0
 )
 
 // version is set at build time with -ldflags "-X main.version=...". It stays "dev" for
@@ -36,11 +39,48 @@ var version = "dev"
 // stats accumulates what a run actually did. The atomic fields are written by the
 // workers; skipped and walkErrors are only ever touched by the walk goroutine.
 type stats struct {
-	filesRead   atomic.Int64
-	filesFailed atomic.Int64
-	bytesRead   atomic.Int64
-	skipped     int64
-	walkErrors  int64
+	filesRead     atomic.Int64
+	filesFailed   atomic.Int64
+	bytesRead     atomic.Int64
+	filesResident atomic.Int64
+	skipped       int64
+	walkErrors    int64
+}
+
+// options controls what the workers do with each path.
+type options struct {
+	bufferSize int
+	filter     bool
+	stubRatio  float64
+	dryRun     bool
+}
+
+// isMigrated reports whether a file looks like a tape stub, using the same signal as the
+// storage team's scanner: allocated size far below logical size.
+//
+// st_blocks is defined by POSIX as a count of 512-byte units regardless of the
+// filesystem's own block size, so there is no unit ambiguity here and no rounding.
+//
+// The failure direction is deliberately safe. If the allocated figure is underestimated
+// the file merely looks like a stub and gets read, which is the old read-everything
+// behaviour. Sparse files and small files held inline in the inode are false positives
+// for the same harmless reason.
+func isMigrated(path string, stubRatio float64) (bool, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return false, err
+	}
+	// An empty file has nothing to recall.
+	if info.Size() == 0 {
+		return false, nil
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		// Allocation is unknowable here, so fall back to recalling the file.
+		return true, nil
+	}
+	allocated := st.Blocks * 512
+	return float64(allocated) < float64(info.Size())*stubRatio, nil
 }
 
 // Main entrypoint. The real work is in run so that deferred cleanup still happens on a
@@ -55,6 +95,9 @@ func run() int {
 	bufferMiB := flag.Int("buffer", defaultBufferMiB, "Read buffer size per worker, in MiB")
 	progress := flag.Duration("progress", defaultProgress, "Interval between progress lines (0 to disable)")
 	showVersion := flag.Bool("version", false, "Print version and exit")
+	filter := flag.Bool("filter", true, "Only recall files that look migrated (allocated size below logical size)")
+	stubRatio := flag.Float64("stub-ratio", defaultStubRatio, "Treat a file as migrated when allocated < logical * ratio")
+	dryRun := flag.Bool("dry-run", false, "List the files that would be recalled without reading them")
 	flag.Parse()
 
 	if *showVersion {
@@ -85,6 +128,13 @@ func run() int {
 		log.Println("Please provide the input directory")
 		flag.Usage()
 		return 1
+	}
+
+	opts := options{
+		bufferSize: *bufferMiB * 1024 * 1024,
+		filter:     *filter,
+		stubRatio:  *stubRatio,
+		dryRun:     *dryRun,
 	}
 
 	timeStart := time.Now()
@@ -128,7 +178,7 @@ func run() int {
 
 		// Recall files from the input directory. Work done before an error still
 		// counts, so the totals do not under-report.
-		if err := recallFiles(inputDir, *workers, *bufferMiB*1024*1024, total); err != nil {
+		if err := recallFiles(inputDir, *workers, opts, total); err != nil {
 			log.Println("Error recalling files:", err)
 			failedDirs++
 		}
@@ -136,13 +186,20 @@ func run() int {
 
 	// Print results
 	elapsed := time.Since(timeStart)
-	resultText := fmt.Sprintf("Recalled %d files (%s) in %s [%s/s]",
-		total.filesRead.Load(), humanBytes(total.bytesRead.Load()), elapsed,
+	verb := "Recalled"
+	if *dryRun {
+		verb = "Would recall"
+	}
+	resultText := fmt.Sprintf("%s %d files (%s) in %s [%s/s]",
+		verb, total.filesRead.Load(), humanBytes(total.bytesRead.Load()), elapsed,
 		humanBytes(int64(float64(total.bytesRead.Load())/elapsed.Seconds())))
 	separator := strings.Repeat("=", len(resultText))
 
 	log.Println(separator)
 	log.Println(resultText)
+	if r := total.filesResident.Load(); r > 0 {
+		log.Printf("%d files already resident, not read", r)
+	}
 	if total.filesFailed.Load() > 0 || total.walkErrors > 0 || total.skipped > 0 {
 		log.Printf("%d failed, %d skipped as non-regular, %d walk errors",
 			total.filesFailed.Load(), total.skipped, total.walkErrors)
@@ -172,7 +229,7 @@ func humanBytes(n int64) string {
 }
 
 // recallFiles processes all files in the given directory, accumulating into total.
-func recallFiles(inputDir string, workers int, bufferSize int, total *stats) error {
+func recallFiles(inputDir string, workers int, opts options, total *stats) error {
 	wg := sync.WaitGroup{}
 
 	// A fixed pool of workers reads from this queue while the walk fills it. The walk
@@ -184,8 +241,29 @@ func recallFiles(inputDir string, workers int, bufferSize int, total *stats) err
 		go func() {
 			defer wg.Done()
 			// One buffer per worker, reused for every file it handles.
-			dataBuffer := make([]byte, bufferSize)
+			dataBuffer := make([]byte, opts.bufferSize)
 			for filePath := range paths {
+				// Stat in the worker rather than in the walk. WalkDir gets
+				// file-vs-dir from readdir for free, so this is an added syscall
+				// per file; running it here spreads it across the pool instead
+				// of serialising it behind the traversal.
+				if opts.filter {
+					migrated, err := isMigrated(filePath, opts.stubRatio)
+					if err != nil {
+						log.Println("Error checking file:", err)
+						total.filesFailed.Add(1)
+						continue
+					}
+					if !migrated {
+						total.filesResident.Add(1)
+						continue
+					}
+				}
+				if opts.dryRun {
+					log.Println("would recall:", filePath)
+					total.filesRead.Add(1)
+					continue
+				}
 				n, err := uncacheFile(filePath, dataBuffer)
 				if err != nil {
 					log.Println("Error uncaching file:", err)
