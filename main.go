@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"flag"
 	"fmt"
 	"io"
@@ -22,16 +21,23 @@ const (
 	// Paths buffered between the walk and the workers, so a slow recall does not stall
 	// the traversal.
 	queueDepth = 4096
+	// Read buffer per worker, unless overridden with -buffer. Larger buffers mean
+	// proportionally fewer read syscalls over the same bytes.
+	defaultBufferMiB = 4
 )
 
 // Main entrypoint
 func main() {
 	logFile := flag.String("log", "", "Path to log file")
 	workers := flag.Int("j", defaultWorkers, "Number of files to read concurrently")
+	bufferMiB := flag.Int("buffer", defaultBufferMiB, "Read buffer size per worker, in MiB")
 	flag.Parse()
 
 	if *workers < 1 {
 		log.Fatalln("-j must be at least 1")
+	}
+	if *bufferMiB < 1 {
+		log.Fatalln("-buffer must be at least 1")
 	}
 
 	if *logFile != "" {
@@ -62,7 +68,7 @@ func main() {
 
 		// Recall files from the input directory. Files recalled before an error are
 		// still counted, so the total does not under-report.
-		count, err := recallFiles(inputDir, *workers)
+		count, err := recallFiles(inputDir, *workers, *bufferMiB*1024*1024)
 		totalCount += count
 		if err != nil {
 			log.Println("Error recalling files:", err)
@@ -80,7 +86,7 @@ func main() {
 }
 
 // recallFiles processes all files in the given directory and returns the count of processed files.
-func recallFiles(inputDir string, workers int) (int, error) {
+func recallFiles(inputDir string, workers int, bufferSize int) (int, error) {
 	wg := sync.WaitGroup{}
 
 	// A fixed pool of workers reads from this queue while the walk fills it. The walk
@@ -91,8 +97,10 @@ func recallFiles(inputDir string, workers int) (int, error) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			// One buffer per worker, reused for every file it handles.
+			dataBuffer := make([]byte, bufferSize)
 			for filePath := range paths {
-				if err := uncacheFile(filePath); err != nil {
+				if err := uncacheFile(filePath, dataBuffer); err != nil {
 					log.Println("Error uncaching file:", err)
 				}
 			}
@@ -145,19 +153,18 @@ func recallFiles(inputDir string, workers int) (int, error) {
 	return count, nil
 }
 
-// uncacheFile reads the file to uncache it
-func uncacheFile(filePath string) error {
-	dataBuffer := make([]byte, 4096)
-
+// uncacheFile reads the file to uncache it. The caller supplies the buffer so it can be
+// reused across files. Reads stay sequential and cover the whole file: that is what
+// triggers the recall, and it must not change.
+func uncacheFile(filePath string, dataBuffer []byte) error {
 	fileHandle, err := os.Open(filePath)
 	if err != nil {
 		return fmt.Errorf("failed to open file %s: %w", filePath, err)
 	}
 	defer fileHandle.Close()
 
-	fileReader := bufio.NewReader(fileHandle)
 	for {
-		_, err := fileReader.Read(dataBuffer)
+		_, err := fileHandle.Read(dataBuffer)
 		if err != nil {
 			if err == io.EOF {
 				break
