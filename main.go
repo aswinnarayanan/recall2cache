@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -26,35 +27,56 @@ const (
 	defaultBufferMiB = 4
 )
 
-// Main entrypoint
+// stats accumulates what a run actually did. The atomic fields are written by the
+// workers; skipped and walkErrors are only ever touched by the walk goroutine.
+type stats struct {
+	filesRead   atomic.Int64
+	filesFailed atomic.Int64
+	bytesRead   atomic.Int64
+	skipped     int64
+	walkErrors  int64
+}
+
+// Main entrypoint. The real work is in run so that deferred cleanup still happens on a
+// non-zero exit.
 func main() {
+	os.Exit(run())
+}
+
+func run() int {
 	logFile := flag.String("log", "", "Path to log file")
 	workers := flag.Int("j", defaultWorkers, "Number of files to read concurrently")
 	bufferMiB := flag.Int("buffer", defaultBufferMiB, "Read buffer size per worker, in MiB")
 	flag.Parse()
 
 	if *workers < 1 {
-		log.Fatalln("-j must be at least 1")
+		log.Println("-j must be at least 1")
+		return 1
 	}
 	if *bufferMiB < 1 {
-		log.Fatalln("-buffer must be at least 1")
+		log.Println("-buffer must be at least 1")
+		return 1
 	}
 
 	if *logFile != "" {
 		file, err := os.OpenFile(*logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 		if err != nil {
-			log.Fatalf("Failed to open log file: %v", err)
+			log.Printf("Failed to open log file: %v", err)
+			return 1
 		}
+		defer file.Close()
 		log.SetOutput(file)
 	}
 
 	if len(flag.Args()) == 0 {
 		log.Println("Please provide the input directory")
-		return
+		flag.Usage()
+		return 1
 	}
 
 	timeStart := time.Now()
-	totalCount := 0
+	total := &stats{}
+	failedDirs := 0
 
 	// Process each input directory provided
 	for _, inputDir := range flag.Args() {
@@ -63,30 +85,57 @@ func main() {
 		// Check if the input directory is accessible
 		if _, err := os.Stat(inputDir); err != nil {
 			log.Println("Cannot access input directory:", inputDir, err)
+			failedDirs++
 			continue
 		}
 
-		// Recall files from the input directory. Files recalled before an error are
-		// still counted, so the total does not under-report.
-		count, err := recallFiles(inputDir, *workers, *bufferMiB*1024*1024)
-		totalCount += count
-		if err != nil {
+		// Recall files from the input directory. Work done before an error still
+		// counts, so the totals do not under-report.
+		if err := recallFiles(inputDir, *workers, *bufferMiB*1024*1024, total); err != nil {
 			log.Println("Error recalling files:", err)
-			continue
+			failedDirs++
 		}
 	}
 
 	// Print results
-	resultText := fmt.Sprintf("Recalled %d files in %s", totalCount, time.Since(timeStart))
+	elapsed := time.Since(timeStart)
+	resultText := fmt.Sprintf("Recalled %d files (%s) in %s [%s/s]",
+		total.filesRead.Load(), humanBytes(total.bytesRead.Load()), elapsed,
+		humanBytes(int64(float64(total.bytesRead.Load())/elapsed.Seconds())))
 	separator := strings.Repeat("=", len(resultText))
 
 	log.Println(separator)
 	log.Println(resultText)
+	if total.filesFailed.Load() > 0 || total.walkErrors > 0 || total.skipped > 0 {
+		log.Printf("%d failed, %d skipped as non-regular, %d walk errors",
+			total.filesFailed.Load(), total.skipped, total.walkErrors)
+	}
 	log.Println(separator)
+
+	// Exit non-zero if anything went wrong, so a scheduler can tell a clean run from a
+	// run where most of the tree failed.
+	if failedDirs > 0 || total.filesFailed.Load() > 0 || total.walkErrors > 0 {
+		return 1
+	}
+	return 0
 }
 
-// recallFiles processes all files in the given directory and returns the count of processed files.
-func recallFiles(inputDir string, workers int, bufferSize int) (int, error) {
+// humanBytes formats a byte count for the summary line.
+func humanBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for c := n / unit; c >= unit; c /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
+}
+
+// recallFiles processes all files in the given directory, accumulating into total.
+func recallFiles(inputDir string, workers int, bufferSize int, total *stats) error {
 	wg := sync.WaitGroup{}
 
 	// A fixed pool of workers reads from this queue while the walk fills it. The walk
@@ -100,16 +149,21 @@ func recallFiles(inputDir string, workers int, bufferSize int) (int, error) {
 			// One buffer per worker, reused for every file it handles.
 			dataBuffer := make([]byte, bufferSize)
 			for filePath := range paths {
-				if err := uncacheFile(filePath, dataBuffer); err != nil {
+				n, err := uncacheFile(filePath, dataBuffer)
+				if err != nil {
 					log.Println("Error uncaching file:", err)
+					total.filesFailed.Add(1)
+					continue
 				}
+				total.filesRead.Add(1)
+				total.bytesRead.Add(n)
 			}
 		}()
 	}
 
-	count := 0
-	skipped := 0
-	walkErrors := 0
+	queued := 0
+	skipped := int64(0)
+	walkErrors := int64(0)
 
 	startTime := time.Now()
 	// The counters below are only touched from this callback, which WalkDir runs on a
@@ -132,12 +186,15 @@ func recallFiles(inputDir string, workers int, bufferSize int) (int, error) {
 			skipped++
 			return nil
 		}
-		count++
+		queued++
 		paths <- filePath
 		return nil
 	})
 	close(paths)
 	wg.Wait()
+
+	total.skipped += skipped
+	total.walkErrors += walkErrors
 
 	if skipped > 0 {
 		log.Println("Skipped", skipped, "non-regular files in", inputDir)
@@ -145,32 +202,34 @@ func recallFiles(inputDir string, workers int, bufferSize int) (int, error) {
 	if walkErrors > 0 {
 		log.Println("Encountered", walkErrors, "errors walking", inputDir)
 	}
-	log.Println("<", count, "files in", time.Since(startTime))
+	log.Println("<", queued, "files in", time.Since(startTime))
 
 	if err != nil {
-		return count, fmt.Errorf("error walking directory %s: %w", inputDir, err)
+		return fmt.Errorf("error walking directory %s: %w", inputDir, err)
 	}
-	return count, nil
+	return nil
 }
 
 // uncacheFile reads the file to uncache it. The caller supplies the buffer so it can be
 // reused across files. Reads stay sequential and cover the whole file: that is what
 // triggers the recall, and it must not change.
-func uncacheFile(filePath string, dataBuffer []byte) error {
+func uncacheFile(filePath string, dataBuffer []byte) (int64, error) {
 	fileHandle, err := os.Open(filePath)
 	if err != nil {
-		return fmt.Errorf("failed to open file %s: %w", filePath, err)
+		return 0, fmt.Errorf("failed to open file %s: %w", filePath, err)
 	}
 	defer fileHandle.Close()
 
+	var read int64
 	for {
-		_, err := fileHandle.Read(dataBuffer)
+		n, err := fileHandle.Read(dataBuffer)
+		read += int64(n)
 		if err != nil {
 			if err == io.EOF {
 				break
 			}
-			return fmt.Errorf("failed to read file %s: %w", filePath, err)
+			return read, fmt.Errorf("failed to read file %s: %w", filePath, err)
 		}
 	}
-	return nil
+	return read, nil
 }
