@@ -29,6 +29,10 @@ const (
 	defaultProgress = time.Minute
 )
 
+// version is set at build time with -ldflags "-X main.version=...". It stays "dev" for
+// local builds, so a binary on shared storage can always be traced back to a release.
+var version = "dev"
+
 // stats accumulates what a run actually did. The atomic fields are written by the
 // workers; skipped and walkErrors are only ever touched by the walk goroutine.
 type stats struct {
@@ -50,7 +54,13 @@ func run() int {
 	workers := flag.Int("j", defaultWorkers, "Number of files to read concurrently")
 	bufferMiB := flag.Int("buffer", defaultBufferMiB, "Read buffer size per worker, in MiB")
 	progress := flag.Duration("progress", defaultProgress, "Interval between progress lines (0 to disable)")
+	showVersion := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println("recall2cache", version)
+		return 0
+	}
 
 	if *workers < 1 {
 		log.Println("-j must be at least 1")
