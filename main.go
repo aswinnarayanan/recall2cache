@@ -14,10 +14,25 @@ import (
 	"time"
 )
 
+const (
+	// Number of files read concurrently, unless overridden with -j. Against tape this
+	// is queue depth: the more requests outstanding, the more scope the filesystem has
+	// to order recalls efficiently.
+	defaultWorkers = 100
+	// Paths buffered between the walk and the workers, so a slow recall does not stall
+	// the traversal.
+	queueDepth = 4096
+)
+
 // Main entrypoint
 func main() {
 	logFile := flag.String("log", "", "Path to log file")
+	workers := flag.Int("j", defaultWorkers, "Number of files to read concurrently")
 	flag.Parse()
+
+	if *workers < 1 {
+		log.Fatalln("-j must be at least 1")
+	}
 
 	if *logFile != "" {
 		file, err := os.OpenFile(*logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
@@ -47,7 +62,7 @@ func main() {
 
 		// Recall files from the input directory. Files recalled before an error are
 		// still counted, so the total does not under-report.
-		count, err := recallFiles(inputDir)
+		count, err := recallFiles(inputDir, *workers)
 		totalCount += count
 		if err != nil {
 			log.Println("Error recalling files:", err)
@@ -65,10 +80,25 @@ func main() {
 }
 
 // recallFiles processes all files in the given directory and returns the count of processed files.
-func recallFiles(inputDir string) (int, error) {
+func recallFiles(inputDir string, workers int) (int, error) {
 	wg := sync.WaitGroup{}
-	// Set number of files that can be processed concurrently [100]
-	wc := make(chan struct{}, 100)
+
+	// A fixed pool of workers reads from this queue while the walk fills it. The walk
+	// must not spawn a goroutine per file: on a multi-million-file tree that parks
+	// millions of goroutines, each holding a stack, long before any of them do work.
+	paths := make(chan string, queueDepth)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for filePath := range paths {
+				if err := uncacheFile(filePath); err != nil {
+					log.Println("Error uncaching file:", err)
+				}
+			}
+		}()
+	}
+
 	count := 0
 	skipped := 0
 	walkErrors := 0
@@ -95,17 +125,10 @@ func recallFiles(inputDir string) (int, error) {
 			return nil
 		}
 		count++
-		wg.Add(1)
-		go func(filePath string) {
-			defer wg.Done()
-			wc <- struct{}{}
-			if err := uncacheFile(filePath); err != nil {
-				log.Println("Error uncaching file:", err)
-			}
-			<-wc
-		}(filePath)
+		paths <- filePath
 		return nil
 	})
+	close(paths)
 	wg.Wait()
 
 	if skipped > 0 {
