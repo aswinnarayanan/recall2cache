@@ -25,6 +25,8 @@ const (
 	// Read buffer per worker, unless overridden with -buffer. Larger buffers mean
 	// proportionally fewer read syscalls over the same bytes.
 	defaultBufferMiB = 4
+	// How often progress is reported, unless overridden with -progress.
+	defaultProgress = time.Minute
 )
 
 // stats accumulates what a run actually did. The atomic fields are written by the
@@ -47,6 +49,7 @@ func run() int {
 	logFile := flag.String("log", "", "Path to log file")
 	workers := flag.Int("j", defaultWorkers, "Number of files to read concurrently")
 	bufferMiB := flag.Int("buffer", defaultBufferMiB, "Read buffer size per worker, in MiB")
+	progress := flag.Duration("progress", defaultProgress, "Interval between progress lines (0 to disable)")
 	flag.Parse()
 
 	if *workers < 1 {
@@ -77,6 +80,30 @@ func run() int {
 	timeStart := time.Now()
 	total := &stats{}
 	failedDirs := 0
+
+	// A recall over tape can run for hours. Without this the tool emits nothing
+	// between the first line and the last.
+	if *progress > 0 {
+		stop := make(chan struct{})
+		defer close(stop)
+		go func() {
+			ticker := time.NewTicker(*progress)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-stop:
+					return
+				case <-ticker.C:
+					elapsed := time.Since(timeStart)
+					bytes := total.bytesRead.Load()
+					log.Printf("... %d files, %s, %s/s, elapsed %s",
+						total.filesRead.Load(), humanBytes(bytes),
+						humanBytes(int64(float64(bytes)/elapsed.Seconds())),
+						elapsed.Truncate(time.Second))
+				}
+			}
+		}()
+	}
 
 	// Process each input directory provided
 	for _, inputDir := range flag.Args() {
