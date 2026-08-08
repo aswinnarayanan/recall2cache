@@ -22,76 +22,21 @@ concurrency:
   group: ${{ github.workflow }}
   cancel-in-progress: false
 
+# Only the release job writes; everything else is read-only.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  build:
-    strategy:
-      matrix:
-        include:
-          - goos: linux
-            goarch: amd64
-            filename: recall2cache
-            archive_cmd: tar -czvf
-            archive_ext: .tar.gz
+  # Resolved before the build so the version can be stamped into the binary.
+  version:
     runs-on: ubuntu-latest
-
+    outputs:
+      version_number: ${{ steps.version.outputs.version_number }}
     steps:
       - name: Checkout code
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           fetch-depth: 0
-
-      - name: Set up Go
-        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
-        with:
-          go-version: '1.25'
-          cache: false
-
-      - name: Build binary
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-        run: |
-          go build -o ${{ matrix.filename }}
-
-      - name: Create archive
-        run: |
-          ${{ matrix.archive_cmd }} ${{ matrix.filename }}-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.archive_ext }} ${{ matrix.filename }}
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.filename }}-artifact
-          path: ${{ matrix.filename }}-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.archive_ext }}
-
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
-        with:
-          fetch-depth: 0
-
-      - name: Download artifacts
-        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
-        with:
-          path: artifacts
-          pattern: '*-artifact'
-
-      - name: Debug artifact download
-        run: |
-          echo "Listing contents of artifacts directory:"
-          ls -la artifacts
-          echo "Listing all files recursively:"
-          find artifacts -type f
-
-      - name: Prepare release assets
-        run: |
-          mkdir -p release
-          cp artifacts/* release/
 
       - name: Determine Version
         id: version
@@ -120,6 +65,116 @@ jobs:
           fi
           echo "version_number=$VERSION_PAYLOAD" >> "$GITHUB_OUTPUT"
 
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Set up Go
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          # go.mod records the minimum supported language version; releases are built
+          # with a current toolchain. The two are deliberately different.
+          go-version: '1.25'
+          cache: false
+
+      - name: Check formatting
+        run: |
+          UNFORMATTED=$(gofmt -l .)
+          if [ -n "$UNFORMATTED" ]; then
+            echo "These files are not gofmt'd:"
+            echo "$UNFORMATTED"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -race ./...
+
+  build:
+    needs: [version, test]
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            filename: recall2cache
+            archive_cmd: tar -czvf
+            archive_ext: .tar.gz
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: '1.25'
+          cache: false
+
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          # Statically linked, so the binary does not depend on the glibc version of
+          # whatever node it ends up running on.
+          CGO_ENABLED: 0
+        run: |
+          go build \
+            -trimpath \
+            -ldflags "-s -w -X main.version=${{ needs.version.outputs.version_number }}" \
+            -o ${{ matrix.filename }}
+
+      # -X is silently ignored if main.version does not exist, so this stays correct
+      # whether or not the -version flag has landed yet.
+      - name: Verify binary is statically linked
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        run: file ${{ matrix.filename }} | grep -q 'statically linked'
+
+      - name: Create archive
+        run: |
+          ${{ matrix.archive_cmd }} ${{ matrix.filename }}-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.archive_ext }} ${{ matrix.filename }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ matrix.filename }}-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: ${{ matrix.filename }}-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.archive_ext }}
+
+  release:
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Download artifacts
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          path: release
+          pattern: 'recall2cache-*'
+          # Flatten into release/ rather than one subdirectory per artifact.
+          merge-multiple: true
+
+      - name: Checksum release assets
+        run: |
+          cd release
+          ls -la
+          sha256sum recall2cache-* > SHA256SUMS
+          cat SHA256SUMS
+
+      # Pushes made with GITHUB_TOKEN do not trigger workflow runs, so this tag push
+      # does not re-enter the workflow via the `push: tags` trigger above.
       - name: Create and push tag for workflow_dispatch
         if: github.event_name == 'workflow_dispatch'
         env:
@@ -127,8 +182,8 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag ${{ steps.version.outputs.version_number }}
-          git push origin ${{ steps.version.outputs.version_number }}
+          git tag ${{ needs.version.outputs.version_number }}
+          git push origin ${{ needs.version.outputs.version_number }}
 
       - name: Create GitHub Release
         env:
@@ -141,7 +196,7 @@ jobs:
           else
             NOTES_ARGS+=(--generate-notes)
           fi
-          gh release create "${{ steps.version.outputs.version_number }}" \
-            --title "${{ steps.version.outputs.version_number }}" \
+          gh release create "${{ needs.version.outputs.version_number }}" \
+            --title "${{ needs.version.outputs.version_number }}" \
             "${NOTES_ARGS[@]}" \
             release/*
