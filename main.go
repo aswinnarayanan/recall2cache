@@ -55,16 +55,11 @@ type options struct {
 	dryRun     bool
 }
 
-// isMigrated reports whether a file looks like a tape stub, using the same signal as the
-// storage team's scanner: allocated size far below logical size.
+// isMigrated reports whether a file looks like a tape stub: allocated size below logical
+// size. st_blocks is in 512-byte units by POSIX, regardless of filesystem block size.
 //
-// st_blocks is defined by POSIX as a count of 512-byte units regardless of the
-// filesystem's own block size, so there is no unit ambiguity here and no rounding.
-//
-// The failure direction is deliberately safe. If the allocated figure is underestimated
-// the file merely looks like a stub and gets read, which is the old read-everything
-// behaviour. Sparse files and small files held inline in the inode are false positives
-// for the same harmless reason.
+// Off by default. When enabled, files smaller than the filesystem's allocation unit may be
+// misreported as resident and skipped.
 func isMigrated(path string, stubRatio float64) (bool, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -95,7 +90,7 @@ func run() int {
 	bufferMiB := flag.Int("buffer", defaultBufferMiB, "Read buffer size per worker, in MiB")
 	progress := flag.Duration("progress", defaultProgress, "Interval between progress lines (0 to disable)")
 	showVersion := flag.Bool("version", false, "Print version and exit")
-	filter := flag.Bool("filter", true, "Only recall files that look migrated (allocated size below logical size)")
+	filter := flag.Bool("filter", false, "Skip files that look already resident (allocated size at or above logical size)")
 	stubRatio := flag.Float64("stub-ratio", defaultStubRatio, "Treat a file as migrated when allocated < logical * ratio")
 	dryRun := flag.Bool("dry-run", false, "List the files that would be recalled without reading them")
 	flag.Parse()
